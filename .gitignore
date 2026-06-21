@@ -1,0 +1,21 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables (Sensitive data)
+.env
+
+# Application database / extracted data
+extracted_data.xlsx
+
+# OS generated files
+.DS_Store
+Thumbs.db
