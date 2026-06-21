@@ -253,12 +253,7 @@ def save_records_to_excel(records):
     return df_combined
 
 
-def reset_database():
-    """データベースファイルを削除する"""
-    if os.path.exists(EXCEL_FILE):
-        os.remove(EXCEL_FILE)
-        return True
-    return False
+
 
 
 def filter_database_by_date(df, start_date, end_date):
@@ -335,14 +330,7 @@ default_fields = "日付, 取引先, 金額, 品目"
 fields_input = st.sidebar.text_area("抽出項目定義", value=default_fields, height=100)
 fields = [f.strip() for f in fields_input.split(",") if f.strip()]
 
-# 3. データベース初期化
-st.sidebar.markdown("#### 🗑️ データの初期化")
-if st.sidebar.button("データベースをリセット", type="secondary", use_container_width=True):
-    if reset_database():
-        st.sidebar.success("データベースをリセットしました")
-        st.rerun()
-    else:
-        st.sidebar.info("リセットするデータベースが存在しません")
+
 
 # メインパネルのレイアウト
 upload_tab, db_tab = st.tabs(["📤 ファイルのアップロードと解析", "📊 蓄積データの一覧"])
