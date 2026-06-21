@@ -5,6 +5,8 @@ import io
 import os
 import json
 from datetime import datetime
+from pathlib import Path
+from string import Template
 from PIL import Image
 from dotenv import load_dotenv
 from google import genai
@@ -12,6 +14,13 @@ from google.genai import types
 
 # .envファイルから環境変数をロード
 load_dotenv()
+
+# ---------------------------------------------------------
+# 定数定義
+# ---------------------------------------------------------
+BASE_DIR = Path(__file__).parent
+EXCEL_FILE = str(BASE_DIR / "extracted_data.xlsx")
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # ---------------------------------------------------------
 # ページ初期設定
@@ -29,8 +38,10 @@ st.set_page_config(
 if "theme" not in st.session_state:
     st.session_state.theme = "light"
 
+
 def toggle_theme():
     st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+
 
 IS_DARK = st.session_state.theme == "dark"
 
@@ -54,149 +65,24 @@ else:
     text_muted = "#71717a"
     shadow = "0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03)"
 
-custom_css = f"""
-<style>
-    /* 全体背景とフォント設定 */
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], .main, .block-container, section[data-testid="stMain"] {{
-        background-color: {bg_color} !important;
-        color: {text_color} !important;
-        font-family: 'DM Sans', -apple-system, sans-serif !important;
-    }}
-    .block-container {{
-        padding: 2rem 2.5rem 3rem !important;
-        max-width: 1360px !important;
-    }}
-    
-    /* カード風コンテナ */
-    .custom-card {{
-        background-color: {card_color};
-        border: 1px solid {border_color};
-        border-radius: 10px;
-        padding: 1.5rem;
-        box-shadow: {shadow};
-        margin-bottom: 1.25rem;
-    }}
-    
-    /* ヘッダーブランド */
-    .brand {{
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 1rem;
-    }}
-    .brand-title {{
-        font-size: 1.75rem;
-        font-weight: 700;
-        color: {text_color};
-        letter-spacing: -0.03em;
-    }}
-    .brand-subtitle {{
-        font-size: 0.9rem;
-        color: {text_muted};
-        margin-top: -0.5rem;
-        margin-bottom: 1.5rem;
-    }}
-
-    /* HTMLテーブルのスタイリング */
-    .data-table {{
-        width: 100%;
-        border-collapse: separate;
-        border-spacing: 0;
-        font-size: 0.85rem;
-        margin-top: 1rem;
-    }}
-    .data-table th {{
-        text-align: left;
-        padding: 0.75rem 1rem;
-        color: {text_muted};
-        font-weight: 600;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        border-bottom: 2px solid {border_color};
-        background-color: {bg_subtle};
-    }}
-    .data-table td {{
-        padding: 0.75rem 1rem;
-        color: {text_color};
-        border-bottom: 1px solid {border_subtle};
-    }}
-    .data-table tr:hover td {{
-        background-color: {bg_subtle};
-    }}
-    
-    /* バッジ */
-    .badge {{
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 6px;
-        font-size: 0.75rem;
-        font-weight: 500;
-    }}
-    .badge-success {{
-        color: #16a34a;
-        background-color: rgba(22, 163, 74, 0.1);
-    }}
-    .badge-info {{
-        color: #2563eb;
-        background-color: rgba(37, 99, 235, 0.1);
-    }}
-
-    /* ファイルアップローダー（ドラッグ＆ドロップゾーン）のカスタマイズ */
-    [data-testid="stFileUploaderDropzone"] {{
-        border: 2px dashed {border_color} !important;
-        background-color: {bg_subtle} !important;
-        border-radius: 12px !important;
-        padding: 2.5rem 2rem !important;
-        display: flex !important;
-        flex-direction: column !important;
-        align-items: center !important;
-        justify-content: center !important;
-        text-align: center !important;
-        min-height: 180px !important;
-        transition: all 0.2s ease-in-out !important;
-        cursor: pointer !important;
-    }}
-    [data-testid="stFileUploaderDropzone"]:hover {{
-        border-color: #2563eb !important;
-        background-color: rgba(37, 99, 235, 0.04) !important;
-    }}
-    
-    /* アップローダー内のボタン（Upload / Browse files）のカスタマイズ */
-    [data-testid="stFileUploaderDropzone"] button {{
-        background-color: #2563eb !important;
-        color: #ffffff !important;
-        border: none !important;
-        padding: 0.5rem 1.5rem !important;
-        border-radius: 6px !important;
-        font-weight: 500 !important;
-        margin-top: 0.75rem !important;
-        box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.1) !important;
-        transition: background-color 0.2s !important;
-    }}
-    [data-testid="stFileUploaderDropzone"] button:hover {{
-        background-color: #1d4ed8 !important;
-    }}
-    
-    /* ドロップゾーン内にアップロードを促すアイコンとテキストを追加 */
-    [data-testid="stFileUploaderDropzone"]::before {{
-        content: "📥" !important;
-        font-size: 2.5rem !important;
-        margin-bottom: 0.5rem !important;
-    }}
-</style>
-"""
-st.markdown(custom_css, unsafe_allow_html=True)
-
-# ---------------------------------------------------------
-# ファイル名・パス定義
-# ---------------------------------------------------------
-EXCEL_FILE = "extracted_data.xlsx"
+# CSSテンプレートを外部ファイルから読み込み、テーマ変数を適用
+_css_path = BASE_DIR / "style.css"
+_css_template = Template(_css_path.read_text(encoding="utf-8"))
+_css_content = _css_template.safe_substitute(
+    bg_color=bg_color,
+    bg_subtle=bg_subtle,
+    card_color=card_color,
+    border_color=border_color,
+    border_subtle=border_subtle,
+    text_color=text_color,
+    text_muted=text_muted,
+    shadow=shadow,
+)
+st.markdown(f"<style>{_css_content}</style>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 解析ヘルパー関数
 # ---------------------------------------------------------
-
 
 
 def extract_text_from_word(file_bytes):
@@ -208,16 +94,26 @@ def extract_text_from_word(file_bytes):
         for para in doc.paragraphs:
             if para.text.strip():
                 full_text.append(para.text)
-        # 表の読み込み
+        # 表の読み込み（セル結合による重複テキストを排除）
         for table in doc.tables:
             for row in table.rows:
-                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                seen = set()
+                row_text = []
+                for cell in row.cells:
+                    cell_id = id(cell._tc)
+                    if cell_id not in seen and cell.text.strip():
+                        seen.add(cell_id)
+                        row_text.append(cell.text.strip())
                 if row_text:
                     full_text.append(" | ".join(row_text))
         return "\n".join(full_text)
-    except Exception as e:
+    except (ValueError, IOError) as e:
         st.error(f"Wordファイルの解析中にエラーが発生しました: {e}")
         return ""
+    except Exception as e:
+        st.error(f"Wordファイルの解析中に予期しないエラーが発生しました: {e}")
+        return ""
+
 
 def extract_text_from_excel(file_bytes):
     """Excelファイルからテキスト（Markdownの表形式）を抽出する"""
@@ -233,57 +129,67 @@ def extract_text_from_excel(file_bytes):
                 markdown_table = df_clean.to_markdown(index=False)
                 full_text.append(markdown_table)
         return "\n\n".join(full_text)
-    except Exception as e:
+    except (ValueError, IOError) as e:
         st.error(f"Excelファイルの解析中にエラーが発生しました: {e}")
         return ""
+    except Exception as e:
+        st.error(f"Excelファイルの解析中に予期しないエラーが発生しました: {e}")
+        return ""
+
 
 # ---------------------------------------------------------
 # Gemini API 連携ロジック
 # ---------------------------------------------------------
 
+
+@st.cache_resource
+def _get_gemini_client(api_key):
+    """Gemini APIクライアントをキャッシュして再利用する"""
+    return genai.Client(api_key=api_key)
+
+
 def extract_data_with_gemini(api_key, contents, fields):
     """Gemini APIを使用して、テキストまたは画像から構造化されたJSONデータを抽出する"""
     try:
-        # 最新のgoogle-genaiクライアントを初期化
-        client = genai.Client(api_key=api_key)
-        
+        client = _get_gemini_client(api_key)
+
         # 動的にJSONスキーマを構築
         properties = {
             field: types.Schema(
-                type=types.Type.STRING, 
+                type=types.Type.STRING,
                 description=f"ドキュメントから'{field}'に該当する情報を抽出してください。情報がない場合はnullにしてください。"
-            ) 
+            )
             for field in fields
         }
-        
+
         schema = types.Schema(
             type=types.Type.OBJECT,
             properties=properties,
             required=fields
         )
-        
+
         fields_desc = ", ".join([f'"{f}"' for f in fields])
         prompt = f"""
         提供されたドキュメント（画像またはテキスト）から、以下の項目を正確に抽出してください。
         抽出項目: {fields_desc}
-        
+
         【抽出ルール】
         1. 金額や日付などは、可能な限りクリーンな形式（金額ならカンマなし数値、日付ならYYYY-MM-DD形式など）に整形して抽出してください。
         2. ドキュメント内に明確な情報がない項目は null にしてください。
         """
-        
+
         # リクエストコンテンツの構築
         request_contents = []
         if isinstance(contents, list):
             request_contents.extend(contents)
         else:
             request_contents.append(contents)
-        
+
         request_contents.append(prompt)
-        
-        # API呼び出し (gemini-2.5-flashを使用)
+
+        # API呼び出し
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=GEMINI_MODEL,
             contents=request_contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -291,44 +197,51 @@ def extract_data_with_gemini(api_key, contents, fields):
                 temperature=0.1
             )
         )
-        
+
         # 結果のパース
         return json.loads(response.text)
-        
+
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"APIレスポンスのJSON解析に失敗しました: {e}")
     except Exception as e:
         raise RuntimeError(f"Gemini APIによる解析中にエラーが発生しました: {e}")
+
 
 # ---------------------------------------------------------
 # Excel保存・読み込みロジック
 # ---------------------------------------------------------
+
 
 def load_database():
     """蓄積されたExcelデータをロードする"""
     if os.path.exists(EXCEL_FILE):
         try:
             return pd.read_excel(EXCEL_FILE)
-        except Exception as e:
+        except (ValueError, IOError) as e:
             st.error(f"データベースファイルの読み込みに失敗しました: {e}")
             return pd.DataFrame()
     return pd.DataFrame()
 
-def save_record_to_excel(record):
-    """抽出した1つのレコードをExcelに追記・保存する"""
-    df_new = pd.DataFrame([record])
+
+def save_records_to_excel(records):
+    """抽出した複数のレコードをExcelに一括追記・保存する"""
+    if not records:
+        return pd.DataFrame()
+
+    df_new = pd.DataFrame(records)
     if os.path.exists(EXCEL_FILE):
         try:
             df_existing = pd.read_excel(EXCEL_FILE)
-            # 既存の列構成と合わせつつ結合
             df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-        except Exception as e:
+        except (ValueError, IOError) as e:
             st.warning(f"既存のExcelの読み込みに失敗したため、新規に作成します: {e}")
             df_combined = df_new
     else:
         df_combined = df_new
-        
-    # 保存
+
     df_combined.to_excel(EXCEL_FILE, index=False)
     return df_combined
+
 
 def reset_database():
     """データベースファイルを削除する"""
@@ -336,6 +249,7 @@ def reset_database():
         os.remove(EXCEL_FILE)
         return True
     return False
+
 
 # ---------------------------------------------------------
 # UI 構築
@@ -403,7 +317,7 @@ with upload_tab:
 
     if uploaded_files:
         st.markdown(f"**アップロードされたファイル数: {len(uploaded_files)} 件**")
-        
+
         if not api_key:
             st.error("❌ Gemini APIキーが設定されていません。サイドバーまたは環境変数で設定してください。")
         else:
@@ -411,17 +325,19 @@ with upload_tab:
             if st.button("🚀 AIで一括解析を実行", type="primary"):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                
+
                 # 結果を一時保存するリスト
                 results = []
-                
+
                 for idx, file in enumerate(uploaded_files):
                     status_text.write(f"【{file.name}】を処理中... ({idx+1}/{len(uploaded_files)})")
                     file_ext = os.path.splitext(file.name)[1].lower()
                     file_bytes = file.read()
-                    
+                    # 再利用に備えてシークポインタを先頭に戻す
+                    file.seek(0)
+
                     contents = None
-                    
+
                     try:
                         # ファイル形式に応じたパース処理
                         if file_ext in [".jpg", ".jpeg", ".png"]:
@@ -445,11 +361,11 @@ with upload_tab:
                             if not text:
                                 raise ValueError("Excelファイルからデータを抽出できませんでした。")
                             contents = text
-                        
+
                         # Gemini API を呼び出してデータを抽出
                         if contents:
                             extracted_data = extract_data_with_gemini(api_key, contents, fields)
-                            
+
                             # メタデータを追加して結果を作成
                             record = {
                                 "処理日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -457,22 +373,25 @@ with upload_tab:
                                 "ファイル形式": file_ext.upper().replace(".", ""),
                                 **extracted_data
                             }
-                            
-                            # データベースに保存
-                            save_record_to_excel(record)
+
                             results.append((file.name, "成功", record))
                         else:
                             results.append((file.name, "失敗 (解析可能なコンテンツがありません)", None))
-                            
+
                     except Exception as e:
                         st.error(f"エラー: {file.name} の処理中にエラーが発生しました: {e}")
                         results.append((file.name, f"失敗 ({str(e)})", None))
-                    
+
                     # プログレスバー更新
                     progress_bar.progress((idx + 1) / len(uploaded_files))
-                
+
+                # 成功したレコードを一括でExcelに保存（O(n)の書き込み）
+                successful_records = [record for _, _, record in results if record]
+                if successful_records:
+                    save_records_to_excel(successful_records)
+
                 status_text.success("✨ すべてのファイルの処理が完了しました！")
-                
+
                 # 処理結果のサマリーを表示
                 st.markdown("### 📋 処理サマリー")
                 summary_data = []
@@ -489,22 +408,22 @@ with upload_tab:
 # ---------------------------------------------------------
 with db_tab:
     df_db = load_database()
-    
+
     if df_db.empty:
         st.info("📂 まだ蓄積されたデータはありません。ファイルを解析するとここに追加されます。")
     else:
         st.markdown('<div class="custom-card">', unsafe_allow_html=True)
         st.subheader("蓄積データ")
-        
+
         # カラム順序を整理 (処理日時、ファイル名、ファイル形式を左側に配置)
         meta_cols = ["処理日時", "元ファイル名", "ファイル形式"]
         other_cols = [col for col in df_db.columns if col not in meta_cols]
         final_cols = [col for col in meta_cols if col in df_db.columns] + other_cols
         df_display = df_db[final_cols]
-        
+
         # Streamlit標準のインタラクティブテーブルで表示
         st.dataframe(df_display, use_container_width=True)
-        
+
         # Excelファイルのダウンロードボタン
         with open(EXCEL_FILE, "rb") as f:
             st.download_button(
