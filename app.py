@@ -4,6 +4,7 @@ import docx
 import io
 import os
 import json
+import base64
 from datetime import datetime
 from pathlib import Path
 from string import Template
@@ -348,93 +349,231 @@ with upload_tab:
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # session_state の初期化
+    if "extraction_results" not in st.session_state:
+        st.session_state.extraction_results = []
+    if "file_previews" not in st.session_state:
+        st.session_state.file_previews = []
+    if "save_completed" not in st.session_state:
+        st.session_state.save_completed = False
+
+    def _clear_edit_keys():
+        """前回の編集ウィジェットのキーを session_state から除去する"""
+        for key in list(st.session_state.keys()):
+            if key.startswith("edit_") or key.startswith("preview_text_"):
+                del st.session_state[key]
+
     if uploaded_files:
         st.markdown(f"**アップロードされたファイル数: {len(uploaded_files)} 件**")
 
         if not api_key:
             st.error("❌ Gemini APIキーが設定されていません。サイドバーまたは環境変数で設定してください。")
         else:
-            # 抽出ボタン
-            if st.button("🚀 AIで一括解析を実行", type="primary"):
+            # AI解析実行ボタン
+            if st.button("🚀 AIで一括解析を実行", type="primary", key="run_extraction_btn"):
+                _clear_edit_keys()
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
-                # 結果を一時保存するリスト
                 results = []
+                previews = []
 
                 for idx, file in enumerate(uploaded_files):
                     status_text.write(f"【{file.name}】を処理中... ({idx+1}/{len(uploaded_files)})")
                     file_ext = os.path.splitext(file.name)[1].lower()
                     file_bytes = file.read()
-                    # 再利用に備えてシークポインタを先頭に戻す
                     file.seek(0)
 
                     contents = None
+                    preview_info = {
+                        "name": file.name,
+                        "ext": file_ext,
+                        "preview_type": None,
+                        "preview_data": None,
+                    }
 
                     try:
                         # ファイル形式に応じたパース処理
                         if file_ext in [".jpg", ".jpeg", ".png"]:
-                            # 画像としてそのまま
                             contents = [Image.open(io.BytesIO(file_bytes))]
+                            preview_info["preview_type"] = "image"
+                            preview_info["preview_data"] = file_bytes
                         elif file_ext == ".pdf":
-                            # PDFは直接バイナリデータをPartとして作成し、Geminiに渡す
                             contents = types.Part.from_bytes(
                                 data=file_bytes,
                                 mime_type="application/pdf"
                             )
+                            preview_info["preview_type"] = "pdf"
+                            preview_info["preview_data"] = file_bytes
                         elif file_ext == ".docx":
-                            # Wordのテキスト抽出
                             text = extract_text_from_word(file_bytes)
                             if not text:
                                 raise ValueError("Wordファイルからテキストを抽出できませんでした。")
                             contents = text
+                            preview_info["preview_type"] = "text"
+                            preview_info["preview_data"] = text
                         elif file_ext in [".xlsx", ".xls"]:
-                            # Excelのテキスト（Markdownテーブル）抽出
                             text = extract_text_from_excel(file_bytes)
                             if not text:
                                 raise ValueError("Excelファイルからデータを抽出できませんでした。")
                             contents = text
+                            preview_info["preview_type"] = "text"
+                            preview_info["preview_data"] = text
 
                         # Gemini API を呼び出してデータを抽出
                         if contents:
                             extracted_data = extract_data_with_gemini(api_key, contents, fields)
-
-                            # メタデータを追加して結果を作成
-                            record = {
-                                "処理日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "元ファイル名": file.name,
-                                "ファイル形式": file_ext.upper().replace(".", ""),
-                                **extracted_data
-                            }
-
-                            results.append((file.name, "成功", record))
+                            results.append({
+                                "file_name": file.name,
+                                "file_ext": file_ext,
+                                "status": "成功",
+                                "extracted": extracted_data,
+                                "fields": fields[:],
+                            })
                         else:
-                            results.append((file.name, "失敗 (解析可能なコンテンツがありません)", None))
-
+                            results.append({
+                                "file_name": file.name,
+                                "file_ext": file_ext,
+                                "status": "失敗 (解析可能なコンテンツがありません)",
+                                "extracted": None,
+                                "fields": fields[:],
+                            })
                     except Exception as e:
                         st.error(f"エラー: {file.name} の処理中にエラーが発生しました: {e}")
-                        results.append((file.name, f"失敗 ({str(e)})", None))
+                        results.append({
+                            "file_name": file.name,
+                            "file_ext": file_ext,
+                            "status": f"失敗 ({str(e)})",
+                            "extracted": None,
+                            "fields": fields[:],
+                        })
 
-                    # プログレスバー更新
+                    previews.append(preview_info)
                     progress_bar.progress((idx + 1) / len(uploaded_files))
 
-                # 成功したレコードを一括でExcelに保存（O(n)の書き込み）
-                successful_records = [record for _, _, record in results if record]
-                if successful_records:
-                    save_records_to_excel(successful_records)
+                st.session_state.extraction_results = results
+                st.session_state.file_previews = previews
+                st.session_state.save_completed = False
+                status_text.success("✨ AI解析が完了しました！下記で内容を確認・修正してください。")
+                st.rerun()
 
-                status_text.success("✨ すべてのファイルの処理が完了しました！")
+            # --------------------------------------------------
+            # 解析結果の表示（左: プレビュー / 右: 編集フォーム）
+            # --------------------------------------------------
+            if st.session_state.extraction_results and not st.session_state.save_completed:
+                st.markdown("---")
+                st.subheader("📋 解析結果の確認・修正")
+                st.info("💡 左側でファイル内容を確認し、右側で抽出データを修正できます。確認後「✅ 確認して保存」を押してください。")
 
-                # 処理結果のサマリーを表示
-                st.markdown("### 📋 処理サマリー")
-                summary_data = []
-                for fname, status, record in results:
-                    summary_data.append({
-                        "ファイル名": fname,
-                        "ステータス": status,
-                        "抽出結果": json.dumps(record, ensure_ascii=False) if record else "-"
-                    })
-                st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+                ok_count = sum(1 for r in st.session_state.extraction_results if r["extracted"])
+                ng_count = len(st.session_state.extraction_results) - ok_count
+                col_s1, col_s2, col_s3 = st.columns(3)
+                col_s1.metric("合計", f"{len(st.session_state.extraction_results)} 件")
+                col_s2.metric("成功", f"{ok_count} 件")
+                col_s3.metric("失敗", f"{ng_count} 件")
+
+                for idx, result in enumerate(st.session_state.extraction_results):
+                    is_ok = result["extracted"] is not None
+                    icon = "✅" if is_ok else "❌"
+
+                    with st.expander(f"{icon} {result['file_name']}", expanded=is_ok):
+                        if not is_ok:
+                            st.error(f"AI解析に失敗しました: {result['status']}")
+                            continue
+
+                        col_preview, col_edit = st.columns([1, 1])
+
+                        # --- 左カラム: ファイルプレビュー ---
+                        with col_preview:
+                            st.markdown("**📎 ファイルプレビュー**")
+                            preview = (
+                                st.session_state.file_previews[idx]
+                                if idx < len(st.session_state.file_previews)
+                                else None
+                            )
+                            if preview and preview["preview_type"]:
+                                ptype = preview["preview_type"]
+                                pdata = preview["preview_data"]
+
+                                if ptype == "image":
+                                    st.image(pdata, use_container_width=True)
+                                elif ptype == "pdf":
+                                    b64 = base64.b64encode(pdata).decode()
+                                    iframe_html = (
+                                        f'<iframe src="data:application/pdf;base64,{b64}" '
+                                        f'width="100%" height="450" '
+                                        f'style="border:1px solid {border_color};'
+                                        f'border-radius:8px;"></iframe>'
+                                    )
+                                    st.markdown(iframe_html, unsafe_allow_html=True)
+                                elif ptype == "text":
+                                    st.text_area(
+                                        "抽出テキスト",
+                                        pdata,
+                                        height=350,
+                                        disabled=True,
+                                        key=f"preview_text_{idx}",
+                                    )
+                            else:
+                                st.warning("プレビューデータがありません。")
+
+                        # --- 右カラム: 編集可能な抽出データ ---
+                        with col_edit:
+                            st.markdown("**✏️ 抽出データ（編集可能）**")
+                            for field in result["fields"]:
+                                val = result["extracted"].get(field, "") or ""
+                                st.text_input(
+                                    field,
+                                    value=str(val),
+                                    key=f"edit_{idx}_{field}",
+                                )
+
+                # 保存 / 破棄 ボタン
+                st.markdown("---")
+                col_discard, col_spacer, col_save = st.columns([1, 2, 1])
+                with col_discard:
+                    if st.button("🗑️ 破棄する", use_container_width=True, key="discard_btn"):
+                        st.session_state.extraction_results = []
+                        st.session_state.file_previews = []
+                        _clear_edit_keys()
+                        st.rerun()
+                with col_save:
+                    if st.button("✅ 確認して保存", type="primary", use_container_width=True, key="save_btn"):
+                        records = []
+                        for i, res in enumerate(st.session_state.extraction_results):
+                            if res["extracted"] is None:
+                                continue
+                            edited = {
+                                f: st.session_state.get(f"edit_{i}_{f}", "")
+                                for f in res["fields"]
+                            }
+                            records.append({
+                                "処理日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "元ファイル名": res["file_name"],
+                                "ファイル形式": res["file_ext"].upper().replace(".", ""),
+                                **edited,
+                            })
+
+                        if records:
+                            save_records_to_excel(records)
+                            st.session_state.save_completed = True
+                            st.session_state.extraction_results = []
+                            st.session_state.file_previews = []
+                            _clear_edit_keys()
+                            st.rerun()
+                        else:
+                            st.warning("保存可能なデータがありません。")
+
+            # 保存完了メッセージ
+            if st.session_state.get("save_completed"):
+                st.success("✨ データの保存が完了しました！「蓄積データの一覧」タブで確認できます。")
+                st.session_state.save_completed = False
+    else:
+        # ファイルがクリアされた場合は結果もリセット
+        if st.session_state.get("extraction_results"):
+            st.session_state.extraction_results = []
+            st.session_state.file_previews = []
+            _clear_edit_keys()
 
 # ---------------------------------------------------------
 # タブ2: 蓄積データの一覧 & データ管理
