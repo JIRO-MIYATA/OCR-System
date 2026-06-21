@@ -223,6 +223,16 @@ def load_database():
     return pd.DataFrame()
 
 
+def save_dataframe_to_excel(df):
+    """DataFrameをそのままExcelファイルに書き出す"""
+    try:
+        df.to_excel(EXCEL_FILE, index=False)
+        return True
+    except (ValueError, IOError) as e:
+        st.error(f"データベースファイルの書き込みに失敗しました: {e}")
+        return False
+
+
 def save_records_to_excel(records):
     """抽出した複数のレコードをExcelに一括追記・保存する"""
     if not records:
@@ -239,7 +249,7 @@ def save_records_to_excel(records):
     else:
         df_combined = df_new
 
-    df_combined.to_excel(EXCEL_FILE, index=False)
+    save_dataframe_to_excel(df_combined)
     return df_combined
 
 
@@ -249,6 +259,41 @@ def reset_database():
         os.remove(EXCEL_FILE)
         return True
     return False
+
+
+def filter_database_by_date(df, start_date, end_date):
+    """指定期間（開始日〜終了日）のデータにフィルタリングする"""
+    if df.empty or '処理日時' not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    df_temp = df.copy()
+    # 処理日時を一時的に date 型に変換して判定
+    df_temp['_temp_date'] = pd.to_datetime(df_temp['処理日時']).dt.date
+    
+    # 範囲内のマスク
+    mask = (df_temp['_temp_date'] >= start_date) & (df_temp['_temp_date'] <= end_date)
+    
+    # 範囲内（対象）と範囲外（残すデータ）に分離
+    df_target = df[mask]
+    df_remaining = df[~mask]
+    
+    return df_target, df_remaining
+
+
+def delete_records_by_date(start_date, end_date):
+    """指定期間のレコードを削除する"""
+    df = load_database()
+    if df.empty:
+        return False, 0
+    
+    df_target, df_remaining = filter_database_by_date(df, start_date, end_date)
+    deleted_count = len(df_target)
+    
+    if deleted_count == 0:
+        return False, 0
+        
+    success = save_dataframe_to_excel(df_remaining)
+    return success, deleted_count
 
 
 # ---------------------------------------------------------
@@ -404,7 +449,7 @@ with upload_tab:
                 st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
 
 # ---------------------------------------------------------
-# タブ2: 蓄積データの一覧
+# タブ2: 蓄積データの一覧 & データ管理
 # ---------------------------------------------------------
 with db_tab:
     df_db = load_database()
@@ -412,8 +457,9 @@ with db_tab:
     if df_db.empty:
         st.info("📂 まだ蓄積されたデータはありません。ファイルを解析するとここに追加されます。")
     else:
+        # 1. 全蓄積データ一覧
         st.markdown('<div class="custom-card">', unsafe_allow_html=True)
-        st.subheader("蓄積データ")
+        st.subheader("🗂️ 全蓄積データ一覧")
 
         # カラム順序を整理 (処理日時、ファイル名、ファイル形式を左側に配置)
         meta_cols = ["処理日時", "元ファイル名", "ファイル形式"]
@@ -427,10 +473,99 @@ with db_tab:
         # Excelファイルのダウンロードボタン
         with open(EXCEL_FILE, "rb") as f:
             st.download_button(
-                label="📥 Excelファイルとしてダウンロード",
+                label="📥 すべてのデータをExcelでダウンロード",
                 data=f,
-                file_name="ocr_extracted_database.xlsx",
+                file_name="ocr_extracted_all_database.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                use_container_width=True,
+                key="dl_all_btn"
             )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # 2. 期間指定の操作セクション
+        st.markdown('<div class="custom-card">', unsafe_allow_html=True)
+        st.subheader("⚙️ データの期間指定操作（抽出・削除）")
+        st.write("ファイルの処理日時を基準にして、データの抽出や削除を行います。")
+
+        # 日付選択의 最小値と最大値を取得
+        try:
+            db_dates = pd.to_datetime(df_db['処理日時']).dt.date
+            min_date = db_dates.min()
+            max_date = db_dates.max()
+        except Exception:
+            min_date = datetime.now().date()
+            max_date = datetime.now().date()
+
+        col_date1, col_date2 = st.columns(2)
+        with col_date1:
+            start_date = st.date_input("開始日", min_date, key="op_start_date")
+        with col_date2:
+            end_date = st.date_input("終了日", max_date, key="op_end_date")
+
+        if start_date > end_date:
+            st.error("❌ エラー: 開始日は終了日より前の日付を指定してください。")
+        else:
+            df_target, _ = filter_database_by_date(df_db, start_date, end_date)
+            
+            # メタカラム順序の整理（表示用）
+            if not df_target.empty:
+                df_target_display = df_target[final_cols]
+            else:
+                df_target_display = df_target
+
+            # 2a. 抽出
+            with st.expander("📥 期間指定データ抽出（プレビューとダウンロード）", expanded=True):
+                if df_target.empty:
+                    st.info("指定された期間に該当するデータはありません。")
+                else:
+                    st.write(f"**指定期間のデータ: {len(df_target)} 件**")
+                    st.dataframe(df_target_display, use_container_width=True)
+
+                    col_fmt, col_btn = st.columns([1, 1])
+                    with col_fmt:
+                        export_format = st.radio("ダウンロード形式", ["Excel", "CSV"], horizontal=True, key="export_fmt")
+                    with col_btn:
+                        st.write("") # ボタンの縦位置調整用のダミー
+                        if export_format == "Excel":
+                            excel_buffer = io.BytesIO()
+                            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                                df_target.to_excel(writer, index=False)
+                            excel_data = excel_buffer.getvalue()
+
+                            st.download_button(
+                                label="📥 選択データをExcelで保存",
+                                data=excel_data,
+                                file_name=f"ocr_extracted_{start_date}_{end_date}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key="dl_target_excel"
+                            )
+                        else:
+                            csv_data = df_target.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="📥 選択データをCSVで保存",
+                                data=csv_data,
+                                file_name=f"ocr_extracted_{start_date}_{end_date}.csv",
+                                mime="text/csv",
+                                use_container_width=True,
+                                key="dl_target_csv"
+                            )
+
+            # 2b. 削除
+            with st.expander("🗑️ 期間指定データ削除（プレビューと実行）", expanded=False):
+                if df_target.empty:
+                    st.info("指定された期間に該当するデータはありません。")
+                else:
+                    st.warning(f"⚠️ 指定期間のデータ {len(df_target)} 件が削除されます。削除されたデータは復元できません。")
+                    st.dataframe(df_target_display, use_container_width=True)
+
+                    # 二重確認用チェックボックス
+                    confirm_delete = st.checkbox("はい、表示されているデータを完全に削除することに同意します。", key="confirm_del")
+
+                    if st.button("🚨 選択したデータを完全に削除する", type="primary", disabled=not confirm_delete, use_container_width=True):
+                        success, deleted_count = delete_records_by_date(start_date, end_date)
+                        if success:
+                            st.success(f"✨ {deleted_count} 件のデータを正常に削除しました。")
+                            # 画面のリロード
+                            st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
